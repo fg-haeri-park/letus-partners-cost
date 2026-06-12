@@ -1,6 +1,15 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LETUS 협력사 통합 재무관리 시스템
 
-## Getting Started
+바로서비스 · 에프스토리 · 하나물류 3개 법인 재무 데이터 통합 관리 시스템
+
+## 시작하기
+
+### 1. Supabase 설정
+1. [supabase.com](https://supabase.com)에서 새 프로젝트 생성
+2. `supabase/migrations/001_initial_schema.sql` 내용을 SQL Editor에서 실행
+3. `.env.local` 파일에 실제 URL과 Key 값 입력
+
+### 2. 실행
 
 First, run the development server:
 

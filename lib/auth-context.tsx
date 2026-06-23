@@ -1,7 +1,6 @@
 'use client'
 
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
 import { IS_MOCK, MOCK_COMPANIES } from '@/lib/mock-data'
 import { useAppStore } from '@/lib/store'
 
@@ -12,7 +11,7 @@ export type AuthUser = {
   email: string
   name: string
   role: UserRole
-  companyId: string | null  // null = 전체 법인 접근, 값 있으면 해당 법인만
+  companyId: string | null
 }
 
 type AuthContextType = {
@@ -20,6 +19,7 @@ type AuthContextType = {
   loading: boolean
   isAdmin: boolean
   canEdit: boolean
+  signIn: (email: string, password: string) => Promise<{ error?: string }>
   signOut: () => Promise<void>
   mockLogin: (role: UserRole, companyId?: string | null) => void
 }
@@ -29,6 +29,7 @@ const AuthContext = createContext<AuthContextType>({
   loading: true,
   isAdmin: false,
   canEdit: false,
+  signIn: async () => ({}),
   signOut: async () => {},
   mockLogin: () => {},
 })
@@ -36,82 +37,44 @@ const AuthContext = createContext<AuthContextType>({
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
-  const { setSelectedCompany, setCompanies, companies } = useAppStore()
-
-  // 법인 제한이 있는 사용자: 해당 법인 자동 선택
-  function applyCompanyRestriction(companyId: string | null) {
-    if (!companyId) return
-    if (IS_MOCK) {
-      const company = MOCK_COMPANIES.find((c) => c.id === companyId)
-      if (company) setSelectedCompany(company)
-    } else {
-      // Supabase 모드: companies가 로드된 후 적용 (header에서 처리)
-    }
-  }
+  const { setSelectedCompany } = useAppStore()
 
   useEffect(() => {
-    if (IS_MOCK) {
-      const saved = localStorage.getItem('letus-mock-user')
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved) as AuthUser
-          setUser(parsed)
-          applyCompanyRestriction(parsed.companyId)
-        } catch {}
-      }
-      setLoading(false)
-      return
+    const saved = localStorage.getItem('letus-user')
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as AuthUser
+        setUser(parsed)
+        if (parsed.companyId) {
+          // header에서 companies 로드 후 처리
+        }
+      } catch {}
     }
-
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (session?.user) {
-        await loadProfile(session.user.id, session.user.email ?? '')
-      }
-      setLoading(false)
-    })
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (session?.user) {
-        await loadProfile(session.user.id, session.user.email ?? '')
-      } else {
-        setUser(null)
-      }
-    })
-
-    return () => subscription.unsubscribe()
+    setLoading(false)
   }, [])
 
-  async function loadProfile(userId: string, email: string) {
-    const { data } = await supabase
-      .from('user_profiles')
-      .select('name, role, company_id, companies(id, name, code)')
-      .eq('user_id', userId)
-      .single()
+  async function signIn(email: string, password: string): Promise<{ error?: string }> {
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+      const json = await res.json()
+      if (!res.ok) return { error: json.error ?? '로그인 실패' }
 
-    const companyId = data?.company_id ?? null
-    const authUser: AuthUser = {
-      id: userId,
-      email,
-      name: data?.name ?? email.split('@')[0],
-      role: (data?.role as UserRole) ?? 'member',
-      companyId,
-    }
-    setUser(authUser)
-
-    // 법인 제한 사용자: 해당 법인 자동 선택
-    if (companyId && data?.companies) {
-      const co = data.companies as { id: string; name: string; code: string }
-      setSelectedCompany(co)
+      const authUser = json.user as AuthUser
+      localStorage.setItem('letus-user', JSON.stringify(authUser))
+      setUser(authUser)
+      return {}
+    } catch {
+      return { error: '서버에 연결할 수 없습니다' }
     }
   }
 
   async function signOut() {
-    if (IS_MOCK) {
-      localStorage.removeItem('letus-mock-user')
-      setUser(null)
-      return
-    }
-    await supabase.auth.signOut()
+    localStorage.removeItem('letus-user')
+    localStorage.removeItem('letus-mock-user')
     setUser(null)
   }
 
@@ -125,6 +88,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       companyId,
     }
     localStorage.setItem('letus-mock-user', JSON.stringify(mockUser))
+    localStorage.setItem('letus-user', JSON.stringify(mockUser))
     setUser(mockUser)
     if (companyId && company) setSelectedCompany(company)
   }
@@ -133,7 +97,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const canEdit = user?.role === 'admin'
 
   return (
-    <AuthContext.Provider value={{ user, loading, isAdmin, canEdit, signOut, mockLogin }}>
+    <AuthContext.Provider value={{ user, loading, isAdmin, canEdit, signIn, signOut, mockLogin }}>
       {children}
     </AuthContext.Provider>
   )

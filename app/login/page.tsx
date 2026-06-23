@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
 import { IS_MOCK, MOCK_COMPANIES } from '@/lib/mock-data'
 import { useAuth } from '@/lib/auth-context'
 import { Button } from '@/components/ui/button'
@@ -14,7 +13,7 @@ import { Lock, Mail, ChevronDown } from 'lucide-react'
 
 export default function LoginPage() {
   const router = useRouter()
-  const { mockLogin } = useAuth()
+  const { mockLogin, signIn } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -24,14 +23,12 @@ export default function LoginPage() {
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
-    try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
-      if (error) throw error
-      router.push('/dashboard')
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : '로그인 실패')
-    } finally {
+    const { error } = await signIn(email, password)
+    if (error) {
+      toast.error(error)
       setLoading(false)
+    } else {
+      router.push('/dashboard')
     }
   }
 

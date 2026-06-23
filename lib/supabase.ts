@@ -3,14 +3,17 @@ import { createClient } from '@supabase/supabase-js'
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'https://placeholder.supabase.co'
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? 'placeholder'
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+// 클라이언트용 (브라우저)
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: { autoRefreshToken: false, persistSession: false },
+})
 
+// 서버용 (API Route) — service role 키 또는 anon 키 fallback
 export function createServerClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'https://placeholder.supabase.co',
-    process.env.SUPABASE_SERVICE_ROLE_KEY ?? 'placeholder',
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  )
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? supabaseAnonKey
+  return createClient(supabaseUrl, key, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  })
 }
 
 export type Database = {

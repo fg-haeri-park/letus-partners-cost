@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import ExcelJS from 'exceljs'
-import { createServerClient } from '@/lib/supabase'
+import { query, queryOne } from '@/lib/db'
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
@@ -12,18 +12,17 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: '파라미터 누락' }, { status: 400 })
   }
 
-  const supabase = createServerClient()
   const wb = new ExcelJS.Workbook()
 
   if (type === 'bank') {
-    const { data: company } = await supabase.from('companies').select('name').eq('id', company_id).single()
-    const { data: rows } = await supabase
-      .from('bank_transactions')
-      .select('*, accounts(name)')
-      .eq('company_id', company_id)
-      .gte('date', `${ym}-01`)
-      .lte('date', `${ym}-31`)
-      .order('date')
+    const company = await queryOne<{ name: string }>('SELECT name FROM companies WHERE id = $1', [company_id])
+    const rows = await query(
+      `SELECT bt.*, a.name as account_name FROM bank_transactions bt
+       LEFT JOIN accounts a ON a.id = bt.account_id
+       WHERE bt.company_id = $1 AND to_char(bt.date, 'YYYY-MM') = $2
+       ORDER BY bt.date`,
+      [company_id, ym]
+    ) as Array<{ date: string; type: string; amount: number; description: string; account_name: string; memo: string }>
 
     const ws = wb.addWorksheet('통장내역')
     ws.columns = [
@@ -34,44 +33,38 @@ export async function GET(req: NextRequest) {
       { header: '계정과목', key: 'account', width: 20 },
       { header: '메모', key: 'memo', width: 20 },
     ]
-
-    // 헤더 스타일
     ws.getRow(1).font = { bold: true }
     ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F0FE' } }
 
-    for (const row of rows ?? []) {
+    for (const row of rows) {
       ws.addRow({
         date: row.date,
         type: row.type,
         amount: row.type === '입금' ? row.amount : -row.amount,
         description: row.description,
-        account: (row.accounts as { name: string } | null)?.name ?? '',
+        account: row.account_name ?? '',
         memo: row.memo ?? '',
       })
     }
-
-    // 금액 열 숫자 서식
     ws.getColumn('amount').numFmt = '#,##0'
-
     const [year, month] = ym.split('-')
     ws.getCell('A1').value = `통장내역 — ${company?.name} ${year}년 ${Number(month)}월`
-    ws.mergeCells('A1:F1')
-    ws.getRow(1).height = 20
   }
 
   if (type === 'pl') {
     const center_id = searchParams.get('center_id')
-    const { data: company } = await supabase.from('companies').select('name').eq('id', company_id).single()
-    const { data: accounts } = await supabase.from('accounts').select('*').order('sort_order')
-    const query = supabase
-      .from('monthly_summary')
-      .select('account_id, amount')
-      .eq('company_id', company_id)
-      .eq('ym', ym)
-    if (center_id) query.eq('center_id', center_id)
-    const { data: summaryRows } = await query
+    const company = await queryOne<{ name: string }>('SELECT name FROM companies WHERE id = $1', [company_id])
+    const accounts = await query('SELECT * FROM accounts ORDER BY sort_order') as Array<{ id: string; category: string; name: string }>
 
-    const amountMap = Object.fromEntries((summaryRows ?? []).map((r) => [r.account_id, Number(r.amount)]))
+    const conditions = ['company_id = $1', 'ym = $2']
+    const params: unknown[] = [company_id, ym]
+    if (center_id) { conditions.push('center_id = $3'); params.push(center_id) }
+
+    const summaryRows = await query<{ account_id: string; amount: string }>(
+      `SELECT account_id, SUM(amount) as amount FROM monthly_summary WHERE ${conditions.join(' AND ')} GROUP BY account_id`,
+      params
+    )
+    const amountMap = Object.fromEntries(summaryRows.map(r => [r.account_id, Number(r.amount)]))
 
     const ws = wb.addWorksheet('채산표')
     ws.columns = [
@@ -79,17 +72,14 @@ export async function GET(req: NextRequest) {
       { header: '계정과목', key: 'name', width: 28 },
       { header: '금액', key: 'amount', width: 18 },
     ]
-
     ws.getRow(1).font = { bold: true, size: 13 }
 
     let revenue = 0, variable_cost = 0, fixed_cost = 0
-
-    for (const acc of accounts ?? []) {
+    for (const acc of accounts) {
       const amount = amountMap[acc.id] ?? 0
       if (acc.category === '매출') revenue += amount
       else if (acc.category === '변동비') variable_cost += amount
       else if (acc.category === '고정비') fixed_cost += amount
-
       const row = ws.addRow({ cat: acc.category, name: acc.name, amount })
       row.getCell('amount').numFmt = '#,##0'
     }
@@ -100,10 +90,8 @@ export async function GET(req: NextRequest) {
       r.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDAE8FC' } }
       r.getCell('amount').numFmt = '#,##0'
     }
-
     addSummaryRow('공헌이익 (①-②)', revenue - variable_cost)
     addSummaryRow('영업이익 (③-④)', revenue - variable_cost - fixed_cost)
-
     ws.getCell('A1').value = `채산표 — ${company?.name} ${ym}`
   }
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
-import { createServerClient } from '@/lib/supabase'
+import { query } from '@/lib/db'
 
 export async function POST(req: NextRequest) {
   try {
@@ -46,10 +46,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: '파싱된 데이터가 없습니다' }, { status: 400 })
     }
 
-    const supabase = createServerClient()
-    await supabase.from('salaries').delete().eq('company_id', company_id).eq('ym', ym)
-    const { error } = await supabase.from('salaries').insert(records)
-    if (error) throw new Error(error.message)
+    await query('DELETE FROM salaries WHERE company_id = $1 AND ym = $2', [company_id, ym])
+    for (const r of records) {
+      await query(
+        `INSERT INTO salaries (company_id, employee_name, job_type, ym, base_pay, allowance, deduction, net_pay)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [r.company_id, r.employee_name, r.job_type, r.ym, r.base_pay, r.allowance, r.deduction, r.net_pay]
+      )
+    }
 
     return NextResponse.json({ count: records.length })
   } catch (e: unknown) {

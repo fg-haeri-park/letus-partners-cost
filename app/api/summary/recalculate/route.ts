@@ -1,30 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServerClient } from '@/lib/supabase'
+import { query, queryOne } from '@/lib/db'
 
 export async function POST(req: NextRequest) {
   try {
     const { company_id, ym } = await req.json()
     if (!company_id || !ym) return NextResponse.json({ error: '파라미터 누락' }, { status: 400 })
 
-    const supabase = createServerClient()
-
-    // 기존 monthly_summary 삭제
-    await supabase.from('monthly_summary').delete().eq('company_id', company_id).eq('ym', ym)
+    await query('DELETE FROM monthly_summary WHERE company_id = $1 AND ym = $2', [company_id, ym])
 
     const records: { company_id: string; ym: string; account_id: string; amount: number }[] = []
 
-    // 통장내역에서 계정과목별 집계
-    const { data: bankRows } = await supabase
-      .from('bank_transactions')
-      .select('account_id, type, amount')
-      .eq('company_id', company_id)
-      .gte('date', `${ym}-01`)
-      .lte('date', `${ym}-31`)
-      .not('account_id', 'is', null)
-
+    const bankRows = await query<{ account_id: string; type: string; amount: string }>(
+      `SELECT account_id, type, amount FROM bank_transactions
+       WHERE company_id = $1 AND to_char(date, 'YYYY-MM') = $2 AND account_id IS NOT NULL`,
+      [company_id, ym]
+    )
     const bankMap: Record<string, number> = {}
-    for (const row of bankRows ?? []) {
-      if (!row.account_id) continue
+    for (const row of bankRows) {
       const sign = row.type === '입금' ? 1 : -1
       bankMap[row.account_id] = (bankMap[row.account_id] ?? 0) + Number(row.amount) * sign
     }
@@ -32,60 +24,42 @@ export async function POST(req: NextRequest) {
       records.push({ company_id, ym, account_id, amount })
     }
 
-    // 급여에서 직원급여 계정과목 집계
-    const { data: salaryAccounts } = await supabase
-      .from('accounts')
-      .select('id')
-      .eq('name', '직원급여')
-    const salaryAccountId = salaryAccounts?.[0]?.id
-
-    if (salaryAccountId) {
-      const { data: salaryRows } = await supabase
-        .from('salaries')
-        .select('base_pay, allowance')
-        .eq('company_id', company_id)
-        .eq('ym', ym)
-
-      const totalSalary = (salaryRows ?? []).reduce(
-        (s, r) => s + Number(r.base_pay) + Number(r.allowance), 0
+    const salaryAccount = await queryOne<{ id: string }>('SELECT id FROM accounts WHERE name = $1 LIMIT 1', ['직원급여'])
+    if (salaryAccount) {
+      const salaryRows = await query<{ base_pay: string; allowance: string }>(
+        'SELECT base_pay, allowance FROM salaries WHERE company_id = $1 AND ym = $2',
+        [company_id, ym]
       )
+      const totalSalary = salaryRows.reduce((s, r) => s + Number(r.base_pay) + Number(r.allowance), 0)
       if (totalSalary > 0) {
-        const existing = records.find((r) => r.account_id === salaryAccountId)
+        const existing = records.find(r => r.account_id === salaryAccount.id)
         if (existing) existing.amount += totalSalary
-        else records.push({ company_id, ym, account_id: salaryAccountId, amount: totalSalary })
+        else records.push({ company_id, ym, account_id: salaryAccount.id, amount: totalSalary })
       }
     }
 
-    // 세금계산서 매출 계정과목 집계
-    const { data: salesAccounts } = await supabase
-      .from('accounts')
-      .select('id')
-      .eq('name', '용역매출')
-    const salesAccountId = salesAccounts?.[0]?.id
-
-    if (salesAccountId) {
-      const { data: invoiceRows } = await supabase
-        .from('invoices')
-        .select('amount')
-        .eq('company_id', company_id)
-        .eq('direction', '매출')
-        .gte('issue_date', `${ym}-01`)
-        .lte('issue_date', `${ym}-31`)
-
-      const totalSales = (invoiceRows ?? []).reduce((s, r) => s + Number(r.amount), 0)
+    const salesAccount = await queryOne<{ id: string }>('SELECT id FROM accounts WHERE name = $1 LIMIT 1', ['용역매출'])
+    if (salesAccount) {
+      const invoiceRows = await query<{ amount: string }>(
+        `SELECT amount FROM invoices WHERE company_id = $1 AND direction = '매출' AND to_char(issue_date, 'YYYY-MM') = $2`,
+        [company_id, ym]
+      )
+      const totalSales = invoiceRows.reduce((s, r) => s + Number(r.amount), 0)
       if (totalSales > 0) {
-        const existing = records.find((r) => r.account_id === salesAccountId)
+        const existing = records.find(r => r.account_id === salesAccount.id)
         if (existing) existing.amount = totalSales
-        else records.push({ company_id, ym, account_id: salesAccountId, amount: totalSales })
+        else records.push({ company_id, ym, account_id: salesAccount.id, amount: totalSales })
       }
     }
 
-    if (records.length === 0) {
-      return NextResponse.json({ message: '집계할 데이터가 없습니다', count: 0 })
-    }
+    if (records.length === 0) return NextResponse.json({ message: '집계할 데이터가 없습니다', count: 0 })
 
-    const { error } = await supabase.from('monthly_summary').insert(records)
-    if (error) throw new Error(error.message)
+    for (const r of records) {
+      await query(
+        'INSERT INTO monthly_summary (company_id, ym, account_id, amount) VALUES ($1,$2,$3,$4)',
+        [r.company_id, r.ym, r.account_id, r.amount]
+      )
+    }
 
     return NextResponse.json({ count: records.length })
   } catch (e: unknown) {

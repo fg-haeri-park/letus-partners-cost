@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
-import { createServerClient } from '@/lib/supabase'
+import { query } from '@/lib/db'
 
 export async function POST(req: NextRequest) {
   try {
@@ -48,9 +48,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: '파싱된 데이터가 없습니다' }, { status: 400 })
     }
 
-    const supabase = createServerClient()
-    const { error } = await supabase.from('card_purchases').insert(records)
-    if (error) throw new Error(error.message)
+    for (const r of records) {
+      await query(
+        `INSERT INTO card_purchases (company_id, used_at, amount, merchant, card_number) VALUES ($1,$2,$3,$4,$5)`,
+        [r.company_id, r.used_at, r.amount, r.merchant, r.card_number]
+      )
+    }
 
     return NextResponse.json({ count: records.length })
   } catch (e: unknown) {

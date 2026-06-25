@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
-import { createServerClient } from '@/lib/supabase'
+import { query } from '@/lib/db'
 
 export async function POST(req: NextRequest) {
   try {
@@ -22,13 +22,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: '데이터가 없습니다' }, { status: 400 })
     }
 
-    // 컬럼명 정규화 (다양한 은행 형식 지원)
     const COL_ALIASES: Record<string, string[]> = {
       date: ['일자', '거래일', '거래일시', '날짜', 'date'],
       description: ['적요', '내용', '거래내역', '거래적요', '메모', 'description'],
       deposit: ['입금액', '입금', '입금(원)', 'deposit', '입금금액'],
       withdrawal: ['출금액', '출금', '출금(원)', 'withdrawal', '출금금액'],
-      balance: ['잔액', '잔액(원)', 'balance'],
     }
 
     function findCol(row: Record<string, unknown>, aliases: string[]): string {
@@ -45,13 +43,7 @@ export async function POST(req: NextRequest) {
       Object.entries(COL_ALIASES).map(([field, aliases]) => [field, findCol(firstRow, aliases)])
     )
 
-    const records: {
-      company_id: string
-      date: string
-      type: string
-      amount: number
-      description: string
-    }[] = []
+    const records: { company_id: string; date: string; type: string; amount: number; description: string }[] = []
 
     for (const row of rawRows) {
       const rawDate = row[colMap.date]
@@ -71,29 +63,26 @@ export async function POST(req: NextRequest) {
       const withdrawal = parseFloat(String(row[colMap.withdrawal] ?? '0').replace(/,/g, '')) || 0
       const description = String(row[colMap.description] ?? '').trim()
 
-      if (deposit > 0) {
-        records.push({ company_id, date: dateStr, type: '입금', amount: deposit, description })
-      }
-      if (withdrawal > 0) {
-        records.push({ company_id, date: dateStr, type: '출금', amount: withdrawal, description })
-      }
+      if (deposit > 0) records.push({ company_id, date: dateStr, type: '입금', amount: deposit, description })
+      if (withdrawal > 0) records.push({ company_id, date: dateStr, type: '출금', amount: withdrawal, description })
     }
 
     if (records.length === 0) {
       return NextResponse.json({ error: `${ym} 해당 데이터가 없습니다` }, { status: 400 })
     }
 
-    const supabase = createServerClient()
     // 기존 데이터 삭제 후 재삽입
-    await supabase
-      .from('bank_transactions')
-      .delete()
-      .eq('company_id', company_id)
-      .gte('date', `${ym}-01`)
-      .lte('date', `${ym}-31`)
+    await query(
+      `DELETE FROM bank_transactions WHERE company_id = $1 AND to_char(date, 'YYYY-MM') = $2`,
+      [company_id, ym]
+    )
 
-    const { error } = await supabase.from('bank_transactions').insert(records)
-    if (error) throw new Error(error.message)
+    for (const r of records) {
+      await query(
+        `INSERT INTO bank_transactions (company_id, date, type, amount, description) VALUES ($1,$2,$3,$4,$5)`,
+        [r.company_id, r.date, r.type, r.amount, r.description]
+      )
+    }
 
     return NextResponse.json({ count: records.length })
   } catch (e: unknown) {
